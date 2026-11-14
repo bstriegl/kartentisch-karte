@@ -32,6 +32,7 @@
 <div id="empty" hidden>Diese Seite zeigt die Orte eines Kapitels auf einer topografischen Karte. Öffne sie über den Link „Topokarte mit allen Orten“ im Kartentisch: Die Orte stehen im Link selbst, gespeichert wird hier nichts.</div>
 <script src="lib/leaflet.js"></script>
 <script>
+window.addEventListener("hashchange", () => location.reload()); // another chapter's link opened in the same tab
 (async () => {
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   async function readHash() {
