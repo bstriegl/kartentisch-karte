@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Kartentisch – Topokarte</title>
+<link rel="stylesheet" href="lib/leaflet.css">
+<style>
+  :root { --ink: #1d2629; --panel: #f7f8f5; --rule: #c9cec8; --mark: #b0222b; --approx: #8a5a12; --muted: #5d686b; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--ink); background: var(--panel); }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: calc(8px + env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) 8px max(12px, env(safe-area-inset-left, 0px)); border-bottom: 1px solid var(--rule); }
+  h1 { font-size: 17px; margin: 0; flex: 1 1 200px; min-width: 0; line-height: 1.25; }
+  h1 small { display: block; font-weight: 400; font-size: 12px; color: var(--muted); }
+  select { font: inherit; padding: 7px 8px; border: 1px solid var(--rule); border-radius: 4px; background: #fff; color: var(--ink); max-width: 100%; }
+  #map { flex: 1 1 auto; min-height: 0; background: #dde3e0; }
+  #empty { padding: 24px 16px; max-width: 60ch; }
+  .lbl { background: rgba(255, 255, 255, .92); border: 0; border-radius: 3px; box-shadow: 0 0 0 1px rgba(0, 0, 0, .25); padding: 1px 5px; font: 600 13px/1.3 system-ui, sans-serif; color: var(--ink); white-space: nowrap; }
+  .lbl::before { display: none; }
+  .leaflet-popup-content { font: 14px/1.4 system-ui, sans-serif; margin: 10px 12px; }
+  .leaflet-popup-content b { font-size: 15px; }
+  .leaflet-popup-content .q { color: var(--approx); font-size: 12px; }
+  .leaflet-popup-content .c { color: var(--muted); font-size: 12px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Kartentisch – Topokarte<small id="sub"></small></h1>
+  <select id="layer" aria-label="Karte wählen"></select>
+</header>
+<div id="map"></div>
+<div id="empty" hidden>Diese Seite zeigt die Orte eines Kapitels auf einer topografischen Karte. Öffne sie über den Link „Topokarte mit allen Orten“ im Kartentisch: Die Orte stehen im Link selbst, gespeichert wird hier nichts.</div>
+<script src="lib/leaflet.js"></script>
+<script>
+(async () => {
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  async function readHash() {
+    const h = location.hash.slice(1);
+    try {
+      if (h.startsWith("z=")) {
+        const b64 = h.slice(2).replace(/-/g, "+").replace(/_/g, "/");
+        const bin = atob(b64 + "===".slice((b64.length + 3) % 4));
+        const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+        const text = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).text();
+        return JSON.parse(text);
+      }
+      if (h.startsWith("j=")) return JSON.parse(decodeURIComponent(h.slice(2)));
+    } catch (e) { }
+    return null;
+  }
+  const data = await readHash();
+  const places = (data && Array.isArray(data.p) ? data.p : []).filter((p) => Array.isArray(p) && isFinite(p[1]) && isFinite(p[2]) && Math.abs(p[1]) <= 90 && Math.abs(p[2]) <= 180);
+  if (!places.length) { document.getElementById("map").hidden = true; document.getElementById("empty").hidden = false; document.getElementById("layer").hidden = true; return; }
+  if (data.t) { document.getElementById("title").firstChild.textContent = String(data.t); document.title = String(data.t) + " – Topokarte"; }
+  document.getElementById("sub").textContent = [data.b, places.length + " Orte"].filter(Boolean).join(" · ");
+
+  const LAYERS = {
+    topo: { name: "Topografisch (OpenTopoMap)", url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", opt: { maxZoom: 17, subdomains: "abc", attribution: 'Karte: © <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA), Daten: © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-Mitwirkende, SRTM' } },
+    osm: { name: "Straßenkarte (OpenStreetMap)", url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", opt: { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-Mitwirkende' } },
+    no: { name: "Norwegen amtlich (Kartverket)", url: "https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png", opt: { maxZoom: 18, attribution: '© <a href="https://www.kartverket.no">Kartverket</a>' } },
+  };
+  const inNorway = places.every((p) => p[1] > 57.8 && p[1] < 71.4 && p[2] > 4.3 && p[2] < 31.3 && (p[2] < 13 ? true : p[1] > 62 + (p[2] - 13) * 0.35));
+  let chosen = null; try { chosen = localStorage.getItem("kt-layer-" + (inNorway ? "no" : "w")); } catch (e) { }
+  if (!LAYERS[chosen]) chosen = inNorway ? "no" : "topo";
+  const map = L.map("map", { zoomControl: true });
+  let tiles = null;
+  const sel = document.getElementById("layer");
+  sel.innerHTML = Object.entries(LAYERS).map(([k, v]) => `<option value="${k}">${v.name}</option>`).join("");
+  function setLayer(k) { if (tiles) map.removeLayer(tiles); tiles = L.tileLayer(LAYERS[k].url, LAYERS[k].opt).addTo(map); sel.value = k; }
+  sel.onchange = () => { setLayer(sel.value); try { localStorage.setItem("kt-layer-" + (inNorway ? "no" : "w"), sel.value); } catch (e) { } };
+  setLayer(chosen);
+  L.control.scale({ imperial: false }).addTo(map);
+
+  const prec = ["", "Lage ungefähr", "Gebiet, keine genaue Lage"];
+  const pts = [];
+  places.forEach(([name, lat, lon, q, note]) => {
+    pts.push([lat, lon]);
+    if (q) L.circle([lat, lon], { radius: q === 2 ? 15000 : 3000, color: "#8a5a12", weight: 1.5, dashArray: "5 4", fillColor: "#b0222b", fillOpacity: 0.08, interactive: false }).addTo(map);
+    L.circleMarker([lat, lon], { radius: 7, color: "#fff", weight: 2, fillColor: "#b0222b", fillOpacity: 1 }).addTo(map)
+      .bindTooltip(esc(name), { permanent: true, direction: "right", offset: [8, 0], className: "lbl" })
+      .bindPopup(`<b>${esc(name)}</b>${q ? `<div class="q">${prec[q]}</div>` : ""}${note ? `<div>${esc(note)}</div>` : ""}<div class="c">${lat.toFixed(4)}, ${lon.toFixed(4)}</div>`);
+  });
+  if (pts.length === 1) map.setView(pts[0], 12); else map.fitBounds(pts, { padding: [40, 40], maxZoom: 13 });
+})();
+</script>
+</body>
+</html>
